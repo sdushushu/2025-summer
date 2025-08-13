@@ -1,25 +1,45 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
-#include <time.h>
 #include <stdlib.h>
+#include <time.h>
 
-#define BLOCK_SIZE 16
-#define FILE_SIZE (1024 * 1024) 
+static inline uint32_t rotl32(uint32_t x, int n){ return (x<<n) | (x>>(32-n)); }
+static inline uint32_t rotr32(uint32_t x, int n){ return (x>>n) | (x<<(32-n)); }
 
-static const uint32_t FK[4] = { 0xa3b1bac6, 0x56aa3350, 0x677d9197, 0xb27022dc };
-static const uint32_t CK[32] = {
-    0x00070e15,0x1c232a31,0x383f464d,0x545b6269,
-    0x70777e85,0x8c939aa1,0xa8afb6bd,0xc4cbd2d9,
-    0xe0e7eef5,0xfc030a11,0x181f262d,0x343b4249,
-    0x50575e65,0x6c737a81,0x888f969d,0xa4abb2b9,
-    0xc0c7ced5,0xdce3eaf1,0xf8ff060d,0x141b2229,
-    0x30373e45,0x4c535a61,0x686f767d,0x848b9299,
-    0xa0a7aeb5,0xbcc3cad1,0xd8dfe6ed,0xf4fb0209,
-    0x10171e25,0x2c333a41,0x484f565d,0x646b7279
+static inline uint32_t bswap32(uint32_t x){
+    return ((x & 0x000000FFu) << 24) |
+           ((x & 0x0000FF00u) <<  8) |
+           ((x & 0x00FF0000u) >>  8) |
+           ((x & 0xFF000000u) >> 24);
+}
+
+static inline uint32_t load_be32(const void* p){
+    uint32_t x; memcpy(&x, p, 4); return bswap32(x);
+}
+
+static inline void store_be32(void* p, uint32_t x){
+    x = bswap32(x); memcpy(p, &x, 4);
+}
+
+
+static const uint32_t FK[4] = {
+    0xA3B1BAC6u, 0x56AA3350u, 0x677D9197u, 0xB27022DCu
 };
 
-static const uint8_t S[256] = {
+static const uint32_t CK[32] = {
+    0x00070E15u,0x1C232A31u,0x383F464Du,0x545B6269u,
+    0x70777E85u,0x8C939AA1u,0xA8AFB6BDu,0xC4CBD2D9u,
+    0xE0E7EEF5u,0xFC030A11u,0x181F262Du,0x343B4249u,
+    0x50575E65u,0x6C737A81u,0x888F969Du,0xA4ABB2B9u,
+    0xC0C7CED5u,0xDCE3EAF1u,0xF8FF060Du,0x141B2229u,
+    0x30373E45u,0x4C535A61u,0x686F767Du,0x848B9299u,
+    0xA0A7AEB5u,0xBCC3CAD1u,0xD8DFE6EDu,0xF4FB0209u,
+    0x10171E25u,0x2C333A41u,0x484F565Du,0x646B7279u
+};
+
+// SBOX
+static const uint8_t SBOX[256] = {
     0xd6,0x90,0xe9,0xfe,0xcc,0xe1,0x3d,0xb7,0x16,0xb6,0x14,0xc2,0x28,0xfb,0x2c,0x05,
     0x2b,0x67,0x9a,0x76,0x2a,0xbe,0x04,0xc3,0xaa,0x44,0x13,0x26,0x49,0x86,0x06,0x99,
     0x9c,0x42,0x50,0xf4,0x91,0xef,0x98,0x7a,0x33,0x54,0x0b,0x43,0xed,0xcf,0xac,0x62,
@@ -38,140 +58,360 @@ static const uint8_t S[256] = {
     0x18,0xf0,0x7d,0xec,0x3a,0xdc,0x4d,0x20,0x79,0xee,0x5f,0x3e,0xd7,0xcb,0x39,0x48
 };
 
-uint32_t T[256];
+// ---------------------------- T-table 构造 ----------------------------
 
-static inline uint32_t rol32(uint32_t x, int n) {
-    return (x << n) | (x >> (32 - n));
+static uint32_t T0[256], T1[256], T2[256], T3[256];
+
+static inline uint32_t L32(uint32_t x){
+    return x ^ rotl32(x, 2) ^ rotl32(x,10) ^ rotl32(x,18) ^ rotl32(x,24);
 }
 
-void init_table() {
-    for (int i = 0; i < 256; i++) {
-        uint8_t s = SBOX[i];
-        uint32_t x = s << 24 | s << 16 | s << 8 | s;
-        T[i] = x ^ rol32(x, 2) ^ rol32(x, 10) ^ rol32(x, 18) ^ rol32(x, 24);
+static void sm4_build_Ttables(void){
+    for(int b=0;b<256;b++){
+        uint8_t s = SBOX[b];
+        uint32_t x = ((uint32_t)s) << 24;       
+        uint32_t t = L32(x);
+        T0[b] = t;
+        T1[b] = rotl32(t, 8);
+        T2[b] = rotl32(t,16);
+        T3[b] = rotl32(t,24);
     }
 }
 
 
-static uint32_t S_box(uint32_t x) {
-    uint8_t b[4];
-    b[0] = S[(x >> 24) & 0xff];
-    b[1] = S[(x >> 16) & 0xff];
-    b[2] = S[(x >> 8) & 0xff];
-    b[3] = S[x & 0xff];
-    return (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3];
+static inline uint32_t tau32(uint32_t a){
+    uint8_t b0 = SBOX[(a>>24)&0xFF];
+    uint8_t b1 = SBOX[(a>>16)&0xFF];
+    uint8_t b2 = SBOX[(a>> 8)&0xFF];
+    uint8_t b3 = SBOX[(a    )&0xFF];
+    return ((uint32_t)b0<<24)|((uint32_t)b1<<16)|((uint32_t)b2<<8)|b3;
 }
 
-static uint32_t T_table(uint32_t x) {
-    uint8_t b[4];
-    b[0] = T[(x >> 24) & 0xff];
-    b[1] = T[(x >> 16) & 0xff];
-    b[2] = T[(x >> 8) & 0xff];
-    b[3] = T[x & 0xff];
-    return (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3];
+static inline uint32_t Lp32(uint32_t x){ // L'
+    return x ^ rotl32(x,13) ^ rotl32(x,23);
 }
 
-void sm4_key_schedule(const uint8_t key[16], uint32_t rk[32]) {
-    uint32_t K[36];
-    for (int i = 0; i < 4; i++) {
-        K[i] = ((uint32_t)key[4*i] << 24) | ((uint32_t)key[4*i+1] << 16) |
-               ((uint32_t)key[4*i+2] << 8) | key[4*i+3];
-        K[i] ^= FK[i];
+// ---------------------------- 密钥扩展 ----------------------------
+
+typedef struct { uint32_t rk[32]; uint32_t drk[32]; } sm4_key_t;
+
+static void sm4_key_schedule(sm4_key_t* ks, const uint8_t key[16]){
+    uint32_t K[4];
+    K[0] = load_be32(key+0) ^ FK[0];
+    K[1] = load_be32(key+4) ^ FK[1];
+    K[2] = load_be32(key+8) ^ FK[2];
+    K[3] = load_be32(key+12)^ FK[3];
+
+    for(int i=0;i<32;i++){
+        uint32_t t = K[1] ^ K[2] ^ K[3] ^ CK[i];
+        t = tau32(t);
+        t = Lp32(t);
+        uint32_t rk = K[0] ^ t;
+        ks->rk[i] = rk;
+        K[0]=K[1]; K[1]=K[2]; K[2]=K[3]; K[3]=rk;
     }
-    for (int i = 0; i < 32; i++) {
-        uint32_t tmp = K[i+1] ^ K[i+2] ^ K[i+3] ^ CK[i];
-        K[i+4] = K[i] ^ L_k(S_box(tmp));
-        rk[i] = K[i+4];
+
+    for(int i=0;i<32;i++) ks->drk[i] = ks->rk[31-i];
+}
+
+// ---------------------------- 单块加/解密（T-table） ----------------------------
+
+static inline void sm4_round_tt(uint32_t* X, uint32_t rk){
+    uint32_t t = X[1] ^ X[2] ^ X[3] ^ rk;
+    uint32_t y = T0[(t>>24)&0xFF] ^ T1[(t>>16)&0xFF] ^ T2[(t>>8)&0xFF] ^ T3[t&0xFF];
+    X[0] ^= y;
+}
+
+static void sm4_encrypt_block_tt(const sm4_key_t* ks, const uint8_t in[16], uint8_t out[16]){
+    uint32_t X[4];
+    X[0]=load_be32(in+0); X[1]=load_be32(in+4); X[2]=load_be32(in+8); X[3]=load_be32(in+12);
+
+    for(int i=0;i<32;i++){
+        sm4_round_tt(X, ks->rk[i]);
+        uint32_t tmp = X[0]; X[0]=X[1]; X[1]=X[2]; X[2]=X[3]; X[3]=tmp;
+    }
+    // 反序
+    store_be32(out+0, X[3]); store_be32(out+4, X[2]); store_be32(out+8, X[1]); store_be32(out+12,X[0]);
+}
+
+static void sm4_decrypt_block_tt(const sm4_key_t* ks, const uint8_t in[16], uint8_t out[16]){
+    uint32_t X[4];
+    X[0]=load_be32(in+0); X[1]=load_be32(in+4); X[2]=load_be32(in+8); X[3]=load_be32(in+12);
+
+    for(int i=0;i<32;i++){
+        sm4_round_tt(X, ks->drk[i]);
+        uint32_t tmp = X[0]; X[0]=X[1]; X[1]=X[2]; X[2]=X[3]; X[3]=tmp;
+    }
+    store_be32(out+0, X[3]); store_be32(out+4, X[2]); store_be32(out+8, X[1]); store_be32(out+12,X[0]);
+}
+
+static inline void inc_be128(uint8_t ctr[16]){
+    for(int i=15;i>=0;--i){ if(++ctr[i]) break; }
+}
+
+void sm4_ctr_encrypt_tt(const sm4_key_t* ks,
+                        const uint8_t iv[16],
+                        const uint8_t* in,
+                        uint8_t* out,
+                        size_t len){
+    uint8_t ctr[16]; memcpy(ctr, iv, 16);
+
+
+    while(len >= 16*8){
+        uint8_t keystream[16*8];
+        uint8_t ctmp[16];
+        for(int i=0;i<8;i++){
+            memcpy(ctmp, ctr, 16);
+            sm4_encrypt_block_tt(ks, ctmp, keystream + 16*i);
+            inc_be128(ctr);
+        }
+        for(int i=0;i<16*8;i++) out[i] = in[i] ^ keystream[i];
+        in += 16*8; out += 16*8; len -= 16*8;
+    }
+    while(len >= 16){
+        uint8_t ksblk[16]; uint8_t ctmp[16];
+        memcpy(ctmp, ctr, 16);
+        sm4_encrypt_block_tt(ks, ctmp, ksblk);
+        for(int i=0;i<16;i++) out[i] = in[i] ^ ksblk[i];
+        in += 16; out += 16; len -= 16; inc_be128(ctr);
+    }
+    if(len){
+        uint8_t ksblk[16]; uint8_t ctmp[16];
+        memcpy(ctmp, ctr, 16);
+        sm4_encrypt_block_tt(ks, ctmp, ksblk);
+        for(size_t i=0;i<len;i++) out[i] = in[i] ^ ksblk[i];
     }
 }
 
 
-void sm4_encrypt(const uint8_t input[16], uint8_t output[16], const uint32_t rk[32]) {
-    uint32_t X[36];
-    for (int i = 0; i < 4; i++)
-        X[i] = ((uint32_t)input[4*i] << 24) | ((uint32_t)input[4*i+1] << 16) |
-               ((uint32_t)input[4*i+2] << 8) | input[4*i+3];
 
-    for (int i = 0; i < 32; i++)
-        uint32_t tmp = X[i+1] ^ X[i+2] ^ X[i+3] ^ rk[i];
-        X[i+4] = X[i] ^ L(S_box(tmp));
-
-    for (int i = 0; i < 4; i++) {
-        output[4*i]   = (X[35 - i] >> 24) & 0xFF;
-        output[4*i+1] = (X[35 - i] >> 16) & 0xFF;
-        output[4*i+2] = (X[35 - i] >> 8) & 0xFF;
-        output[4*i+3] = X[35 - i] & 0xFF;
-    }
-}
-
-void sm4_encrypt_op(const uint8_t input[16], uint8_t output[16], const uint32_t rk[32]) {
-    uint32_t X[36];
-    for (int i = 0; i < 4; i++)
-        X[i] = ((uint32_t)input[4*i] << 24) | ((uint32_t)in[4*i+1] << 16) |
-               ((uint32_t)input[4*i+2] << 8) | input[4*i+3];
-
-    for (int i = 0; i < 32; i++)
-        uint32_t tmp = X[i+1] ^ X[i+2] ^ X[i+3] ^ rk[i];
-        X[i+4] = X[i] ^ T_box(tmp);
-
-    for (int i = 0; i < 4; i++) {
-        output[4*i]   = (X[35 - i] >> 24) & 0xFF;
-        output[4*i+1] = (X[35 - i] >> 16) & 0xFF;
-        output[4*i+2] = (X[35 - i] >> 8) & 0xFF;
-        output[4*i+3] = X[35 - i] & 0xFF;
-    }
-}
-
-
-void encrypt_buffer(uint8_t *input, uint8_t *output, size_t size, uint32_t rk[32]) {
-    for (size_t i = 0; i < size; i += BLOCK_SIZE) {
-        sm4_encrypt(&input[i], &output[i], rk[32]);
-    }
-}
-
-void encrypt_buffer_op(uint8_t *input, uint8_t *output, size_t size, uint32_t rk[32]) {
-    for (size_t i = 0; i < size; i += BLOCK_SIZE) {
-        sm4_encrypt_op(&input[i], &output[i], rk[32]);
-    }
-}
-
-// 计时函数
-double get_time_sec() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec + ts.tv_nsec * 1e-9;
-}
-
-int main() {
-    uint8_t *input = malloc(FILE_SIZE);
-    uint8_t *output1 = malloc(FILE_SIZE);
-    uint8_t *output2 = malloc(FILE_SIZE);
-    uint32_t rk[32];
-        uint8_t key[16] = {
-        0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,
-        0xfe,0xdc,0xba,0x98,0x76,0x54,0x32,0x10
+static int selftest(){
+    static const uint8_t key[16] = {
+        0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,0xfe,0xdc,0xba,0x98,0x76,0x54,0x32,0x10
     };
-    for (size_t i = 0; i < FILE_SIZE; i++)
-        input[i] = rand() & 0xFF;
+    static const uint8_t pt[16] = {
+        0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,0xfe,0xdc,0xba,0x98,0x76,0x54,0x32,0x10
+    };
+    static const uint8_t ct_ref[16] = {
+        0x68,0x1e,0xdf,0x34,0xd2,0x06,0x96,0x5e,0x86,0xb3,0xe9,0x4f,0x53,0x6e,0x42,0x46
+    };
 
-    init_TBOX();  
-    sm4_key_schedule(key, rk);
+    sm4_build_Ttables();
+    sm4_key_t ks; sm4_key_schedule(&ks, key);
 
-    printf("Start encryption benchmark (1MB):\n");
+    uint8_t ct[16]; sm4_encrypt_block_tt(&ks, pt, ct);
+    if(memcmp(ct, ct_ref, 16)!=0){
+        fprintf(stderr, "[FAIL] encrypt mismatched!\n");
+        return 0;
+    }
+    uint8_t rt[16]; sm4_decrypt_block_tt(&ks, ct, rt);
+    if(memcmp(rt, pt, 16)!=0){
+        fprintf(stderr, "[FAIL] decrypt mismatched!\n");
+        return 0;
+    }
+    fprintf(stdout, "[OK] SM4 T-table selftest passed.\n");
+    return 1;
+}
 
-    double t1 = get_time_sec();
-    encrypt_buffer(input, output1, FILE_SIZE, rk[32]);
-    double t2 = get_time_sec();
-    printf("No optimization: %.3f sec\n", t2 - t1);
 
-    double t3 = get_time_sec();
-    encrypt_buffer_op(input, output2, FILE_SIZE, rk[32]);
-    double t4 = get_time_sec();
-    printf("T-table optimized: %.3f sec\n", t4 - t3);
+static void* xmalloc(size_t n){ void* p = malloc(n); if(!p){perror("malloc"); exit(1);} return p; }
 
-    free(input);
-    free(output1);
-    free(output2);
+static void bench_ctr(size_t bytes){
+    uint8_t key[16]={0}; uint8_t iv[16]={0};
+    for(int i=0;i<16;i++){ key[i]=i; iv[i]=0xA0+i; }
+
+    sm4_build_Ttables();
+    sm4_key_t ks; sm4_key_schedule(&ks, key);
+
+    uint8_t* in  = (uint8_t*)xmalloc(bytes);
+    uint8_t* out = (uint8_t*)xmalloc(bytes);
+    for(size_t i=0;i<bytes;i++) in[i]=(uint8_t)i;
+
+    const int rounds = 3;
+    double best_gbps = 0.0;
+
+    for(int r=0;r<rounds;r++){
+        uint8_t iv_local[16]; memcpy(iv_local, iv, 16);
+        clock_t t0 = clock();
+        sm4_ctr_encrypt_tt(&ks, iv_local, in, out, bytes);
+        clock_t t1 = clock();
+        double secs = (double)(t1-t0)/CLOCKS_PER_SEC;
+        double gbps = (double)bytes / secs / 1e9;
+        if(gbps>best_gbps) best_gbps = gbps;
+    }
+    printf("CTR throughput: %.2f GB/s (best of %d)\n", best_gbps, rounds);
+    free(in); free(out);
+}
+
+// ---------------------------- main函数 ----------------------------
+
+int main(int argc, char** argv){
+    if(argc==1){
+        return selftest()?0:1;
+    }
+    if(argc>=2 && strcmp(argv[1],"bench")==0){
+        size_t bytes = 256*1024*1024ull; 
+        if(argc>=3){ bytes = (size_t)atof(argv[2]) * 1024.0 * 1024.0; }
+        printf("Benchmarking SM4-CTR T-table on %zu bytes...\n", bytes);
+        bench_ctr(bytes);
+        return 0;
+    }
+    fprintf(stderr, "Usage: %s [bench <MiB>]\n", argv[0]);
     return 0;
 }
+
+
+// ============================ AVX2 / AVX-512 版本（T-table + gather）============================
+#if defined(__AVX2__)
+#include <immintrin.h>
+
+static inline __m256i sm4_round_tt_vec8(__m256i t){
+    // 提取四个字节作为 32 位索引用于 gather
+    __m256i b0 = _mm256_and_si256(t, _mm256_set1_epi32(0x000000FF));
+    __m256i b1 = _mm256_and_si256(_mm256_srli_epi32(t, 8),  _mm256_set1_epi32(0x000000FF));
+    __m256i b2 = _mm256_and_si256(_mm256_srli_epi32(t,16),  _mm256_set1_epi32(0x000000FF));
+    __m256i b3 = _mm256_and_si256(_mm256_srli_epi32(t,24),  _mm256_set1_epi32(0x000000FF));
+
+    __m256i i0 = _mm256_slli_epi32(b0,2);
+    __m256i i1 = _mm256_slli_epi32(b1,2);
+    __m256i i2 = _mm256_slli_epi32(b2,2);
+    __m256i i3 = _mm256_slli_epi32(b3,2);
+
+    __m256i y0 = _mm256_i32gather_epi32((const int*)T3, i0, 1);
+    __m256i y1 = _mm256_i32gather_epi32((const int*)T2, i1, 1);
+    __m256i y2 = _mm256_i32gather_epi32((const int*)T1, i2, 1);
+    __m256i y3 = _mm256_i32gather_epi32((const int*)T0, i3, 1);
+
+    __m256i y = _mm256_xor_si256(_mm256_xor_si256(y0, y1), _mm256_xor_si256(y2, y3));
+    return y;
+}
+
+// 加密 8 个并行块
+static inline void sm4_encrypt8_ecb_tt_avx2(const sm4_key_t* ks,
+                                            const uint8_t in[8][16],
+                                            uint8_t out[8][16]){
+    __m256i X0, X1, X2, X3;
+    uint32_t x0[8],x1[8],x2[8],x3[8];
+    for(int i=0;i<8;i++){
+        x0[i]=load_be32(in[i]+0); x1[i]=load_be32(in[i]+4);
+        x2[i]=load_be32(in[i]+8); x3[i]=load_be32(in[i]+12);
+    }
+    X0=_mm256_loadu_si256((const __m256i*)x0);
+    X1=_mm256_loadu_si256((const __m256i*)x1);
+    X2=_mm256_loadu_si256((const __m256i*)x2);
+    X3=_mm256_loadu_si256((const __m256i*)x3);
+
+    for(int r=0;r<32;r++){
+        __m256i rk = _mm256_set1_epi32((int)ks->rk[r]);
+        __m256i t = _mm256_xor_si256(_mm256_xor_si256(X1,X2), _mm256_xor_si256(X3,rk));
+        __m256i y = sm4_round_tt_vec8(t);
+        __m256i Xn = _mm256_xor_si256(X0, y);
+        X0 = X1; X1 = X2; X2 = X3; X3 = Xn; 
+    }
+    _mm256_storeu_si256((__m256i*)x0, X3);
+    _mm256_storeu_si256((__m256i*)x1, X2);
+    _mm256_storeu_si256((__m256i*)x2, X1);
+    _mm256_storeu_si256((__m256i*)x3, X0);
+    for(int i=0;i<8;i++){
+        store_be32(out[i]+0, x0[i]); store_be32(out[i]+4, x1[i]);
+        store_be32(out[i]+8, x2[i]); store_be32(out[i]+12,x3[i]);
+    }
+}
+
+void sm4_ctr_encrypt_tt_avx2(const sm4_key_t* ks,
+                             const uint8_t iv[16],
+                             const uint8_t* in, uint8_t* out, size_t len){
+    uint8_t ctr[16]; memcpy(ctr, iv, 16);
+
+
+    while(len >= 16*8){
+        uint8_t inblk[8][16];
+        uint8_t ksblk[8][16];
+        for(int i=0;i<8;i++){
+            memcpy(inblk[i], ctr, 16);
+            inc_be128(ctr);
+        }
+        sm4_encrypt8_ecb_tt_avx2(ks, inblk, ksblk);
+        for(int i=0;i<8*16;i++) out[i] = in[i] ^ ksblk[0][i];
+        in += 128; out += 128; len -= 128;
+    }
+
+    if(len) sm4_ctr_encrypt_tt(ks, ctr, in, out, len);
+}
+#endif // __AVX2__
+
+#if defined(__AVX512F__)
+#include <immintrin.h>
+
+static inline __m512i sm4_round_tt_vec16(__m512i t){
+    __m512i b0 = _mm512_and_si512(t, _mm512_set1_epi32(0x000000FF));
+    __m512i b1 = _mm512_and_si512(_mm512_srli_epi32(t, 8),  _mm512_set1_epi32(0x000000FF));
+    __m512i b2 = _mm512_and_si512(_mm512_srli_epi32(t,16),  _mm512_set1_epi32(0x000000FF));
+    __m512i b3 = _mm512_and_si512(_mm512_srli_epi32(t,24),  _mm512_set1_epi32(0x000000FF));
+
+    __m512i i0 = _mm512_slli_epi32(b0,2);
+    __m512i i1 = _mm512_slli_epi32(b1,2);
+    __m512i i2 = _mm512_slli_epi32(b2,2);
+    __m512i i3 = _mm512_slli_epi32(b3,2);
+
+    __m512i y0 = _mm512_i32gather_epi32(i0, (const int*)T3, 1);
+    __m512i y1 = _mm512_i32gather_epi32(i1, (const int*)T2, 1);
+    __m512i y2 = _mm512_i32gather_epi32(i2, (const int*)T1, 1);
+    __m512i y3 = _mm512_i32gather_epi32(i3, (const int*)T0, 1);
+
+    __m512i y = _mm512_xor_si512(_mm512_xor_si512(y0, y1), _mm512_xor_si512(y2, y3));
+    return y;
+}
+
+static inline void sm4_encrypt16_ecb_tt_avx512(const sm4_key_t* ks,
+                                               const uint8_t in[16][16],
+                                               uint8_t out[16][16]){
+    __m512i X0, X1, X2, X3;
+    uint32_t x0[16],x1[16],x2[16],x3[16];
+    for(int i=0;i<16;i++){
+        x0[i]=load_be32(in[i]+0); x1[i]=load_be32(in[i]+4);
+        x2[i]=load_be32(in[i]+8); x3[i]=load_be32(in[i]+12);
+    }
+    X0=_mm512_loadu_si512(x0);
+    X1=_mm512_loadu_si512(x1);
+    X2=_mm512_loadu_si512(x2);
+    X3=_mm512_loadu_si512(x3);
+
+    for(int r=0;r<32;r++){
+        __m512i rk = _mm512_set1_epi32((int)ks->rk[r]);
+        __m512i t = _mm512_xor_si512(_mm512_xor_si512(X1,X2), _mm512_xor_si512(X3,rk));
+        __m512i y = sm4_round_tt_vec16(t);
+        __m512i Xn = _mm512_xor_si512(X0, y);
+        X0 = X1; X1 = X2; X2 = X3; X3 = Xn;
+    }
+
+    _mm512_storeu_si512(x0, X3);
+    _mm512_storeu_si512(x1, X2);
+    _mm512_storeu_si512(x2, X1);
+    _mm512_storeu_si512(x3, X0);
+    for(int i=0;i<16;i++){
+        store_be32(out[i]+0, x0[i]); store_be32(out[i]+4, x1[i]);
+        store_be32(out[i]+8, x2[i]); store_be32(out[i]+12,x3[i]);
+    }
+}
+
+void sm4_ctr_encrypt_tt_avx512(const sm4_key_t* ks,
+                               const uint8_t iv[16],
+                               const uint8_t* in, uint8_t* out, size_t len){
+    uint8_t ctr[16]; memcpy(ctr, iv, 16);
+
+    while(len >= 16*16){
+        uint8_t inblk[16][16];
+        uint8_t ksblk[16][16];
+        for(int i=0;i<16;i++){
+            memcpy(inblk[i], ctr, 16);
+            inc_be128(ctr);
+        }
+        sm4_encrypt16_ecb_tt_avx512(ks, inblk, ksblk);
+        for(int i=0;i<16*16;i++) out[i] = in[i] ^ ksblk[0][i];
+        in += 256; out += 256; len -= 256;
+    }
+    if(len) sm4_ctr_encrypt_tt(ks, ctr, in, out, len);
+}
+#endif // __AVX512F__
 
