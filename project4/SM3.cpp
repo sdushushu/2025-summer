@@ -59,27 +59,22 @@ public:
     }
 
     vector<uint8_t> digest() {
-        // 保存当前状态
         vector<uint8_t> result(DIGEST_SIZE);
         uint32_t saved_state[8];
         memcpy(saved_state, state, sizeof(state));
         vector<uint8_t> saved_buffer = buffer;
         uint64_t saved_count = count;
 
-        // 添加填充
         pad();
 
-        // 处理最后的分组
         if (!buffer.empty()) {
             compress(buffer.data());
         }
 
-        // 生成摘要
         for (size_t i = 0; i < 8; i++) {
             write_uint32_be(result.data() + i * 4, state[i]);
         }
 
-        // 恢复状态
         memcpy(state, saved_state, sizeof(state));
         buffer = saved_buffer;
         count = saved_count;
@@ -138,7 +133,7 @@ private:
         // 添加0x80
         buffer.push_back(0x80);
 
-        // 填充0直到长度满足 (56 mod 64)
+        // 填充0直到长度满足 
         size_t pad_len = (len < 56) ? (56 - len) : (120 - len);
         buffer.insert(buffer.end(), pad_len, 0);
 
@@ -246,7 +241,7 @@ public:
 
     void update(const uint8_t* data, size_t len) {
         size_t offset = 0;
-        count += len * 8;  // 按比特计数
+        count += len * 8;  
 
         // 处理缓冲区中的部分数据
         if (!buffer.empty()) {
@@ -273,27 +268,21 @@ public:
     }
 
     vector<uint8_t> digest() {
-        // 保存当前状态
         vector<uint8_t> result(DIGEST_SIZE);
         uint32_t saved_state[8];
         memcpy(saved_state, state, sizeof(state));
         vector<uint8_t> saved_buffer = buffer;
         uint64_t saved_count = count;
-
-        // 添加填充
         pad();
-
-        // 处理最后的分组
         if (!buffer.empty()) {
             compress(buffer.data());
         }
-
-        // 生成摘要
+        
         for (size_t i = 0; i < 8; i++) {
             write_uint32_be(result.data() + i * 4, state[i]);
         }
 
-        // 恢复状态
+
         memcpy(state, saved_state, sizeof(state));
         buffer = saved_buffer;
         count = saved_count;
@@ -352,7 +341,7 @@ private:
         // 添加0x80
         buffer.push_back(0x80);
 
-        // 填充0直到长度满足 (56 mod 64)
+        // 填充0直到长度满足
         size_t pad_len = (len < 56) ? (56 - len) : (120 - len);
         buffer.insert(buffer.end(), pad_len, 0);
 
@@ -471,12 +460,10 @@ vector<uint8_t> length_extension_attack(
         throw invalid_argument("Invalid hash length");
 
     OptimizedSM3 sm3;
-
-    // 使用公共方法设置状态
     sm3.set_state(original_hash.data());
 
     // 计算原始消息填充后的总比特数
-    size_t pad_len = (55 - (original_len % 64) + 64) % 64; // 填充0的字节数
+    size_t pad_len = (55 - (original_len % 64) + 64) % 64;
     uint64_t total_bits_after_padding = (original_len + 1 + pad_len + 8) * 8;
 
     // 设置正确的消息计数（包含填充和扩展）
@@ -493,21 +480,20 @@ public:
     MerkleTree(const vector<vector<uint8_t>>& leaves) {
         if (leaves.empty()) return;
 
-        // 确保叶子数量是2的幂（填充空节点）
+        // 确保叶子数量是2的幂
         size_t n = leaves.size();
         size_t tree_size = 1;
         while (tree_size < n) tree_size <<= 1;
 
-        // 构建叶子层
         tree.resize(2 * tree_size);
         for (size_t i = 0; i < n; i++) {
             tree[tree_size + i] = hash_leaf(leaves[i]);
         }
         for (size_t i = n; i < tree_size; i++) {
-            tree[tree_size + i] = vector<uint8_t>(32, 0); // 空节点
+            tree[tree_size + i] = vector<uint8_t>(32, 0);
         }
 
-        // 自底向上构建树
+        // 构建树
         for (size_t i = tree_size - 1; i > 0; i--) {
             tree[i] = hash_node(tree[2 * i], tree[2 * i + 1]);
         }
@@ -528,7 +514,7 @@ public:
         size_t pos = n + index;
 
         while (pos > 1) {
-            proof.push_back(tree[pos ^ 1]); // 兄弟节点
+            proof.push_back(tree[pos ^ 1]);
             pos /= 2;
         }
 
@@ -561,7 +547,7 @@ public:
         return current == root;
     }
 
-    // 生成不存在性证明 (返回前驱和后继的证明)
+    // 生成不存在性证明 
     pair<vector<vector<uint8_t>>, vector<vector<uint8_t>>> absence_proof(
         const vector<uint8_t>& target,
         size_t& insert_pos
@@ -574,7 +560,7 @@ public:
         // 在叶子节点中定位插入位置
         size_t n = tree.size() / 2;
         size_t low = 0, high = n;
-        insert_pos = n; // 默认插入到最后
+        insert_pos = n; 
 
         while (low < high) {
             size_t mid = (low + high) / 2;

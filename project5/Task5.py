@@ -3,7 +3,6 @@ from typing import Tuple
 from hashlib import sha256
 
 # ===================== SM2 椭圆曲线参数 =====================
-# SM2参数 (256-bit prime field)
 p_sm2 = 0xFFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFF
 a_sm2 = 0xFFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFC
 b_sm2 = 0x28E9FA9E9D9F5E344D5A9E4BCF6509A7F39789F515AB8F92DDBCBD414D940E93
@@ -28,22 +27,19 @@ class SM2:
         self.n = n_sm2
         self.G = (Gx_sm2, Gy_sm2)
 
-    # 蒙哥马利模约 (SM2优化版)
+    # 蒙哥马利模约 
     def mont_reduce(self, c: int) -> int:
         # 获取低256位和高256位
         c_low = c & ((1 << 256) - 1)
         c_high = c >> 256
 
         # 利用SM2素数特性快速约简 (p = 2²⁵⁶ - 2²²⁴ - 2⁹⁶ + 2⁶⁴ - 1)
-        # 步骤1: 提取特定比特段
         s1 = (c_low >> 224) << 96  # 取高32位，左移96位
         s2 = (c_low >> 96) & ((1 << 128) - 1)  # 取中间128位
         s3 = (c_low & ((1 << 96) - 1)) << 160  # 取低96位，左移160位
 
-        # 步骤2: 组合计算结果
         t = c_high + s1 - s2 + s3
 
-        # 步骤3: 模约简处理
         if t >= self.p:
             t -= self.p
         if t < 0:
@@ -51,7 +47,7 @@ class SM2:
 
         return t
 
-    # 点加倍 (雅可比坐标)
+    # 点加倍 
     def point_double(self, P: Tuple[int, int, int]) -> Tuple[int, int, int]:
         X1, Y1, Z1 = P
         if Z1 == 0:
@@ -65,7 +61,7 @@ class SM2:
         Y3 = T1 * (T2 - X3) - 8 * Y1 ** 4
         return (X3 % self.p, Y3 % self.p, Z3 % self.p)
 
-    # 点加 (雅可比坐标)
+    # 点加 
     def point_add(self, P: Tuple[int, int, int], Q: Tuple[int, int, int]) -> Tuple[int, int, int]:
         X1, Y1, Z1 = P
         X2, Y2, Z2 = Q
@@ -97,7 +93,7 @@ class SM2:
         Z3 = H * Z1 * Z2
         return (X3 % self.p, Y3 % self.p, Z3 % self.p)
 
-    # NAF编码 (非相邻形式)
+    # NAF编码 
     def naf_encode(self, k: int, w: int = 5) -> list:
         naf = []
         while k > 0:
@@ -110,12 +106,12 @@ class SM2:
             k //= 2
         return naf[::-1]
 
-    # 标量乘法 (NAF优化)
+    # 标量乘法 
     def scalar_mult(self, k: int, P: Tuple[int, int]) -> Tuple[int, int]:
         # 转换为雅可比坐标
         P_jac = (P[0], P[1], 1)
 
-        # 预计算表 (w=5)
+        # 预计算表 
         precomputed = {}
         current = P_jac
         for i in range(-15, 16, 2):
@@ -146,7 +142,7 @@ class SM2:
         e = int.from_bytes(msg, 'big') % self.n
         while True:
             k = random.randint(1, self.n - 1)
-            # 标量乘法返回仿射坐标，我们只需要x坐标
+
             x1, _ = self.scalar_mult(k, self.G)
             r = (e + x1) % self.n
             if r == 0 or r + k == self.n:
@@ -167,8 +163,8 @@ class SM2:
             return False
 
         # 双点乘优化
-        sG = self.scalar_mult(s, self.G)  # 返回仿射坐标
-        tPA = self.scalar_mult(t, PA)  # 返回仿射坐标
+        sG = self.scalar_mult(s, self.G)  
+        tPA = self.scalar_mult(t, PA) 
 
         # 将仿射坐标转换为雅可比坐标
         sG_jac = (sG[0], sG[1], 1)
@@ -189,7 +185,6 @@ class SM2:
 
 
 class ECDSA:
-    """比特币使用的ECDSA实现 (secp256k1曲线)"""
 
     def __init__(self):
         self.p = p_btc
@@ -198,9 +193,9 @@ class ECDSA:
         self.n = n_btc
         self.G = (Gx_btc, Gy_btc)
 
-    # 点加倍 (仿射坐标)
+    # 点加倍 
     def point_double(self, P: Tuple[int, int]) -> Tuple[int, int]:
-        if P[1] == 0:  # 无穷远点
+        if P[1] == 0:  
             return (0, 0)
         x, y = P
         s = (3 * x * x + self.a) * pow(2 * y, self.p - 2, self.p) % self.p
@@ -208,7 +203,7 @@ class ECDSA:
         y3 = (s * (x - x3) - y) % self.p
         return (x3, y3)
 
-    # 点加 (仿射坐标)
+    # 点加 
     def point_add(self, P: Tuple[int, int], Q: Tuple[int, int]) -> Tuple[int, int]:
         if P[1] == 0:  # P是无穷远点
             return Q
@@ -226,13 +221,12 @@ class ECDSA:
         y3 = (s * (x1 - x3) - y1) % self.p
         return (x3, y3)
 
-    # 标量乘法 (双倍-加法)
+    # 标量乘法 
     def scalar_mult(self, k: int, P: Tuple[int, int]) -> Tuple[int, int]:
-        # 处理无穷远点
         if k % self.n == 0:
             return (0, 0)
 
-        # 将k转为二进制
+
         bits = bin(k)[2:]
         R = (0, 0)  # 初始化为无穷远点
 
@@ -288,10 +282,10 @@ class ECDSA:
 
 
 def sm2_signature_misuse_poc():
-    """演示SM2签名误用漏洞"""
+
     global s_wrong
     print("\n" + "=" * 60)
-    print("SM2签名误用漏洞演示")
+    print("SM2签名误用漏洞")
     print("=" * 60)
 
     sm2 = SM2()
@@ -302,7 +296,7 @@ def sm2_signature_misuse_poc():
     # 正确签名
     r_correct, s_correct = sm2.sign(dA, msg)
 
-    # 误用签名 (r计算使用mod p)
+    # 误用签名 
     e = int.from_bytes(msg, 'big') % sm2.n
     while True:
         k = random.randint(1, sm2.n - 1)
@@ -331,11 +325,11 @@ def ecdsa_forge_signature_poc():
 
     ecdsa = ECDSA()
 
-    # 假设中本聪私钥 (未知)
-    d_satoshi = 0x1E240  # 测试用
+    # 中本聪私钥 
+    d_satoshi = 0x1E240  
 
     # 用相同k生成两个签名
-    k = 0xABCD1234  # 重复使用的k值
+    k = 0xABCD1234  # 重
     msg1 = b"Send 10 BTC to Alice"
     msg2 = b"Send 20 BTC to Bob"
     sig1 = ecdsa.sign(d_satoshi, msg1, k)
