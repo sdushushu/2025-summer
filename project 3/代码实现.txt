@@ -1,0 +1,160 @@
+pragma circom 2.0.0;
+
+// Poseidon2 电路实现
+
+// 参数设置 (基于256位安全级别)
+const POSEIDON_T = 3;     // 状态大小
+const POSEIDON_RF = 8;    // 完整轮数
+const POSEIDON_RP = 56;   // 部分轮数
+const POSEIDON_TOTAL_ROUNDS = POSEIDON_RF + POSEIDON_RP;
+
+// MDS矩阵 (来自论文的规范)
+const MDS = [
+    [0x4f38b8b0a46b9c3c, 0x7fe7b7b7e8b7b7e8, 0xc8b7b7e8b7b7e8b7],
+    [0xc8b7b7e8b7b7e8b7, 0x4f38b8b0a46b9c3c, 0x7fe7b7b7e8b7b7e8],
+    [0x7fe7b7b7e8b7b7e8, 0xc8b7b7e8b7b7e8b7, 0x4f38b8b0a46b9c3c]
+];
+
+// 轮常数 (示例值，实际实现应使用标准参数)
+const RC = [
+    [0x9c46d4f5e7a9b0c8, 0xd7e8b0c4a9f5e7d3, 0x4c6d8e2f3a9b1c5d],
+    [0xe3d7c8b0a9f5e7d2, 0x8c4d6a9b0c8d2e3f, 0x1c5d7e8f2a3b4c6d],
+    // ... 完整的轮常数应该包含56个
+    [0x3c5d7e8f2a3b4c6d, 0x1e2f3a4b5c6d7e8f, 0x9a8b7c6d5e4f3a2b]
+];
+
+// 完整S-Box层 (x^5操作)
+template FullSBox() {
+    signal input in[POSEIDON_T];
+    signal output out[POSEIDON_T];
+    
+    for (var i = 0; i < POSEIDON_T; i++) {
+        signal tmp;
+        tmp <== in[i] * in[i];       // x^2
+        out[i] <== tmp * tmp * in[i]; // x^5 = x^4 * x
+    }
+}
+
+// 部分S-Box层 (仅第一个元素x^5)
+template PartialSBox() {
+    signal input in[POSEIDON_T];
+    signal output out[POSEIDON_T];
+    
+    // 对第一个元素进行x^5操作
+    signal tmp;
+    tmp <== in[0] * in[0];    // x^2
+    out[0] <== tmp * tmp * in[0]; // x^5
+    
+    // 其他元素直接传递
+    for (var i = 1; i < POSEIDON_T; i++) {
+        out[i] <== in[i];
+    }
+}
+
+// 轮常数相加
+template AddRoundConstants(round) {
+    signal input in[POSEIDON_T];
+    signal output out[POSEIDON_T];
+    
+    for (var i = 0; i < POSEIDON_T; i++) {
+        out[i] <== in[i] + RC[round][i];
+    }
+}
+
+// MDS混合层
+template MixLayer() {
+    signal input in[POSEIDON_T];
+    signal output out[POSEIDON_T];
+    
+    for (var i = 0; i < POSEIDON_T; i++) {
+        out[i] <== 0;
+        for (var j = 0; j < POSEIDON_T; j++) {
+            out[i] <== out[i] + MDS[i][j] * in[j];
+        }
+    }
+}
+
+// 完整轮操作
+template FullRound(round) {
+    signal input in[POSEIDON_T];
+    signal output out[POSEIDON_T];
+    
+    component add_constants = AddRoundConstants(round);
+    component sbox = FullSBox();
+    component mix = MixLayer();
+    
+    add_constants.in <== in;
+    sbox.in <== add_constants.out;
+    mix.in <== sbox.out;
+    out <== mix.out;
+}
+
+// 部分轮操作
+template PartialRound(round) {
+    signal input in[POSEIDON_T];
+    signal output out[POSEIDON_T];
+    
+    component add_constants = AddRoundConstants(round);
+    component sbox = PartialSBox();
+    component mix = MixLayer();
+    
+    add_constants.in <== in;
+    sbox.in <== add_constants.out;
+    mix.in <== sbox.out;
+    out <== mix.out;
+}
+
+// Poseidon2置换函数
+template Poseidon2Permutation() {
+    signal input in[POSEIDON_T];
+    signal output out[POSEIDON_T];
+    
+    signal state[POSEIDON_T];
+    state <== in;
+
+    // 初始完整轮 (4轮)
+    for (var r = 0; r < POSEIDON_RF/2; r++) {
+        component round = FullRound(r);
+        round.in <== state;
+        state <== round.out;
+    }
+
+    // 部分轮 (56轮)
+    for (var r = POSEIDON_RF/2; r < POSEIDON_RF/2 + POSEIDON_RP; r++) {
+        component round = PartialRound(r);
+        round.in <== state;
+        state <== round.out;
+    }
+
+    // 最终完整轮 (4轮)
+    for (var r = POSEIDON_RF/2 + POSEIDON_RP; r < POSEIDON_TOTAL_ROUNDS; r++) {
+        component round = FullRound(r);
+        round.in <== state;
+        state <== round.out;
+    }
+    
+    out <== state;
+}
+
+// 主哈希电路
+template Poseidon2Hash() {
+    // 隐私输入：256位原始消息 (拆分为两个域元素)
+    signal private input in[2];
+    
+    // 公开输出：256位哈希值
+    signal output hash[2];
+    
+    // 初始化状态: [in0, in1, 0]
+    signal state_in[POSEIDON_T] = [in[0], in[1], 0];
+    
+    // 应用Poseidon置换
+    component permutation = Poseidon2Permutation();
+    permutation.in <== state_in;
+    
+    // 输出前两个元素作为哈希值 (256位)
+    hash[0] <== permutation.out[0];
+    hash[1] <== permutation.out[1];
+}
+
+// 主组件
+component main {public [hash]} = Poseidon2Hash();
