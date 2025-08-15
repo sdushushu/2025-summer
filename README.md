@@ -1,11 +1,11 @@
 # 2025-summer
 [           **sdushushu**   ](https://github.com/sdushushu)   杨浩 202200460167
 
-[           **Soverean**     ](https://github.com/Soverean)    白语桐
+[           **Soverean**     ](https://github.com/Soverean)    白语桐 202200460160
 
 [          **zhangjj-blue**   ](https://github.com/zhangjj-blue)  张俊颉 202200460159
 
-[           **Rep1ka**            ](https://github.com/Rep1ka  )  董嘉琦
+[           **Rep1ka**            ](https://github.com/Rep1ka  )  董嘉琦 202200460078
 
 ### **project1** 
 
