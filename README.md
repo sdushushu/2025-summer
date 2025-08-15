@@ -17,7 +17,11 @@
 
 ### **project2**
 
+1.enhance_image（）通过对比度增强，锐度增强使得图像增强
 
+2.detect_watermark_position（）进行水印位置检测，采用OpenCV进行高性能图像分析。
+
+3.extract_watermark_text（）用于提取水印文本
 
 ### **project** 3 
 
